@@ -6,9 +6,11 @@ COPY package*.json ./
 RUN npm install
 
 COPY . .
+
+# generate .svelte-kit/tsconfig.json before building
+RUN npx svelte-kit sync
 RUN npm run build
 
-# create a dir for your sqlite db so it survives rebuilds
 RUN mkdir -p /app/data
 
 EXPOSE 3000
