@@ -55,7 +55,7 @@
 	<div class="category-container">
 		<header class="page-header">
 			<h1>Category Spending</h1>
-			<a href={resolve('/banking')} class="nav-link">Back to Banking</a>
+			<a href={resolve('/')} class="nav-link">Back to Banking</a>
 		</header>
 
 		<MonthControls bind:selectedMonth {months} />

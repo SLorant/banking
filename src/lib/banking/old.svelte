@@ -214,7 +214,7 @@
 <div class="banking-page">
 	<div class="page-header">
 		<h1>Banking Dashboard</h1>
-		<a href={resolve('/banking/categories')} class="nav-link">View Category Spending</a>
+		<a href={resolve('/categories')} class="nav-link">View Category Spending</a>
 	</div>
 
 	<div class="upload-section">
