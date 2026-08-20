@@ -16,9 +16,30 @@
 	/* 	let transactions: Transaction[] = $state([]);
 	let categories: Category[] = $state([]);
 	let loading = $state(false);
-    
+
 	let categoriesLoading = $state(false); */
 	let editingCell: { rowIndex: number; field: keyof Transaction } | null = $state(null);
+
+	const pageSize = 100;
+	let currentPage = $state(0);
+
+	const totalPages = $derived(Math.max(1, Math.ceil(transactions.length / pageSize)));
+
+	$effect(() => {
+		if (currentPage > totalPages - 1) {
+			currentPage = totalPages - 1;
+		}
+	});
+
+	const pagedTransactions = $derived(
+		transactions
+			.slice(currentPage * pageSize, currentPage * pageSize + pageSize)
+			.map((transaction, i) => ({ transaction, index: currentPage * pageSize + i }))
+	);
+
+	const goToPage = (page: number) => {
+		currentPage = Math.min(Math.max(page, 0), totalPages - 1);
+	};
 
 	const deleteRow = async (index: number) => {
 		const transaction = transactions[index];
@@ -113,7 +134,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each transactions as transaction, i (transaction.transactionDateTime)}
+					{#each pagedTransactions as { transaction, index: i } (transaction.transactionDateTime)}
 						<tr>
 							<td class="editable" ondblclick={() => startEdit(i, 'ownAccountName')}>
 								{#if editingCell?.rowIndex === i && editingCell?.field === 'ownAccountName'}
@@ -204,6 +225,31 @@
 				</tbody>
 			</table>
 		</div>
+		{#if totalPages > 1}
+			<div class="pagination">
+				<span class="pagination-info">
+					Rows {currentPage * pageSize + 1}–{Math.min(
+						(currentPage + 1) * pageSize,
+						transactions.length
+					)} of {transactions.length}
+				</span>
+				<div class="pagination-controls">
+					<button disabled={currentPage === 0} onclick={() => goToPage(0)}>«</button>
+					<button disabled={currentPage === 0} onclick={() => goToPage(currentPage - 1)}
+						>‹</button
+					>
+					<span class="pagination-page">Page {currentPage + 1} of {totalPages}</span>
+					<button
+						disabled={currentPage === totalPages - 1}
+						onclick={() => goToPage(currentPage + 1)}>›</button
+					>
+					<button
+						disabled={currentPage === totalPages - 1}
+						onclick={() => goToPage(totalPages - 1)}>»</button
+					>
+				</div>
+			</div>
+		{/if}
 	{:else}
 		<div class="empty-state">
 			<p>No transactions loaded. Upload a CSV file to get started.</p>
@@ -337,6 +383,59 @@
 
 	.delete-btn:active {
 		transform: scale(0.95);
+	}
+
+	.pagination {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 1rem;
+		background: #1e293b;
+		border: 1px solid #334155;
+		border-top: none;
+		border-radius: 0 0 0.75rem 0.75rem;
+		flex-wrap: wrap;
+	}
+
+	.pagination-info {
+		color: #94a3b8;
+		font-size: 0.875rem;
+	}
+
+	.pagination-controls {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.pagination-page {
+		color: #cbd5e1;
+		font-size: 0.875rem;
+		min-width: 8rem;
+		text-align: center;
+	}
+
+	.pagination-controls button {
+		background: #334155;
+		border: 1px solid #475569;
+		color: #e2e8f0;
+		border-radius: 0.375rem;
+		padding: 0.4rem 0.75rem;
+		cursor: pointer;
+		font-size: 0.9rem;
+		transition:
+			background-color 0.15s,
+			opacity 0.15s;
+	}
+
+	.pagination-controls button:hover:not(:disabled) {
+		background-color: #475569;
+	}
+
+	.pagination-controls button:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 
 	.empty-state {
