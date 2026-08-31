@@ -1,39 +1,35 @@
 import type { Transaction } from '$lib/db';
 
-type TransactionImport = Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'> & {
+export type TransactionImport = Omit<Transaction, 'id' | 'createdAt' | 'updatedAt'> & {
 	categoryName?: string;
 };
 
-export const handleFileUpload = (event: Event, loading: boolean, saveStatus: string) => {
-	const target = event.target as HTMLInputElement;
-	const file = target.files?.[0];
-
-	if (!file) return;
-
-	const reader = new FileReader();
-	reader.onload = (e) => {
-		const text = e.target?.result as string;
-		parseCSV(text, loading, saveStatus);
-	};
-	reader.readAsText(file);
+export type ParseResult = {
+	transactions: TransactionImport[];
+	error?: string;
 };
 
-export const loadTransactions = async (
-	transactions: Transaction[],
-	loading: boolean,
-	saveStatus: string
-) => {
-	loading = true;
-	try {
-		const response = await fetch('/api/transactions');
-		transactions = await response.json();
-	} catch (error) {
-		console.error('Failed to load transactions', error);
-		saveStatus = 'Failed to load transactions';
-	} finally {
-		loading = false;
-	}
-	return { transactions, loading, saveStatus };
+export type ImportOutcome = {
+	/** Rows found in the CSV file (after skipping blanks / unkeyable rows). */
+	parsed: number;
+	/** Rows actually inserted (new transactions). */
+	imported: number;
+	/** Rows ignored because they already existed. */
+	skipped: number;
+};
+
+export const readFileAsText = (file: File): Promise<string> =>
+	new Promise((resolve, reject) => {
+		const reader = new FileReader();
+		reader.onload = (e) => resolve((e.target?.result as string) ?? '');
+		reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'));
+		reader.readAsText(file);
+	});
+
+export const loadTransactions = async (): Promise<Transaction[]> => {
+	const response = await fetch('/api/transactions');
+	if (!response.ok) throw new Error('Failed to load transactions');
+	return (await response.json()) as Transaction[];
 };
 
 export const parseCSVLine = (line: string): string[] => {
@@ -66,9 +62,9 @@ export const parseCSVLine = (line: string): string[] => {
 	return result;
 };
 
-export const parseCSV = (text: string, loading: boolean, saveStatus: string) => {
+export const parseCSV = (text: string): ParseResult => {
 	const lines = text.split('\n');
-	if (lines.length < 2) return;
+	if (lines.length < 2) return { transactions: [], error: 'CSV file has no data rows' };
 
 	// Parse header
 	const header = parseCSVLine(lines[0]);
@@ -102,8 +98,7 @@ export const parseCSV = (text: string, loading: boolean, saveStatus: string) => 
 		partnerNameIndex === -1 ||
 		amountIndex === -1
 	) {
-		alert('CSV file is missing required columns');
-		return;
+		return { transactions: [], error: 'CSV file is missing required columns' };
 	}
 
 	// Parse data rows
@@ -142,36 +137,26 @@ export const parseCSV = (text: string, loading: boolean, saveStatus: string) => 
 		});
 	}
 
-	// Save to database
-	saveTransactionsToDb(parsedTransactions, loading, saveStatus);
+	return { transactions: parsedTransactions };
 };
 
-export const saveTransactionsToDb = async (
-	newTransactions: TransactionImport[],
-	loading: boolean,
-	saveStatus: string
-) => {
-	loading = true;
-	saveStatus = 'Saving...';
-	try {
-		const response = await fetch('/api/transactions', {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(newTransactions)
-		});
+export const importTransactions = async (
+	transactions: TransactionImport[]
+): Promise<ImportOutcome> => {
+	const response = await fetch('/api/transactions', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(transactions)
+	});
 
-		if (response.ok) {
-			const result = await response.json();
-			saveStatus = `✓ Saved ${result.count} transactions`;
-			await loadTransactions([], loading, saveStatus);
-			setTimeout(() => (saveStatus = ''), 3000);
-		} else {
-			saveStatus = '✗ Failed to save';
-		}
-	} catch (error) {
-		console.error('Failed to save transactions:', error);
-		saveStatus = '✗ Save error';
-	} finally {
-		loading = false;
-	}
+	if (!response.ok) throw new Error('Failed to save transactions');
+
+	const result = await response.json();
+	const imported = Number(result?.count) || 0;
+
+	return {
+		parsed: transactions.length,
+		imported,
+		skipped: Math.max(0, transactions.length - imported)
+	};
 };

@@ -4,12 +4,14 @@
 
 	import MonthControls from '$lib/banking/MonthControls.svelte';
 	import MonthSummary from '$lib/banking/MonthSummary.svelte';
+	import MonthComparison from '$lib/banking/MonthComparison.svelte';
 	import CategorySpendingLists from '$lib/banking/CategorySpendingLists.svelte';
 	import YearlySummaries from '$lib/banking/YearlySummaries.svelte';
 	import {
 		buildMonths,
 		buildCategoryRows,
 		calculateMonthAggregate,
+		calculateMonthComparison,
 		calculateYearlySummaries,
 		type YearAggregate
 	} from '$lib/banking/categoryUtils';
@@ -55,7 +57,10 @@
 	<div class="category-container">
 		<header class="page-header">
 			<h1>Category Spending</h1>
-			<a href={resolve('/')} class="nav-link">Back to Banking</a>
+			<nav class="header-nav">
+				<a href={resolve('/')} class="nav-link">Banking</a>
+				<a href={resolve('/charts')} class="nav-link">Charts</a>
+			</nav>
 		</header>
 
 		<MonthControls bind:selectedMonth {months} />
@@ -74,10 +79,13 @@
 			{@const incomeRows = rows.filter((r) => r.income > 0 && r.spend === 0)}
 			{@const mixedRows = rows.filter((r) => r.income > 0 && r.spend > 0)}
 			{@const aggregate = calculateMonthAggregate(transactions, selectedMonth)}
+			{@const comparison = calculateMonthComparison(categories, transactions, selectedMonth)}
 
 			<CategorySpendingLists {spendingRows} {incomeRows} {mixedRows} />
 
 			<MonthSummary {aggregate} />
+
+			<MonthComparison {comparison} />
 
 			<YearlySummaries {yearlySummaries} />
 		{/if}
@@ -103,11 +111,24 @@
 		gap: 1.5rem;
 	}
 
+	.page-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		flex-wrap: wrap;
+	}
+
 	.page-header h1 {
 		font-size: 2.25rem;
 		font-weight: 700;
 		color: #f1f5f9;
 		margin: 0;
+	}
+
+	.header-nav {
+		display: flex;
+		gap: 1.25rem;
 	}
 
 	.nav-link {

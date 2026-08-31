@@ -1,28 +1,97 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { handleFileUpload, loadTransactions } from './utils';
+	import { importTransactions, loadTransactions, parseCSV, readFileAsText } from './utils';
+	import { formatDateLabel, getDateKey } from '$lib/banking/categoryUtils';
 	import { resolve } from '$app/paths';
 	import BankingTable from '$lib/banking/BankingTable.svelte';
 	import type { Category, Transaction } from './types';
+
+	type ImportSummary = {
+		parsed: number;
+		imported: number;
+		skipped: number;
+		rangeStart: string | null;
+		rangeEnd: string | null;
+	};
 
 	let transactions: Transaction[] = $state([]);
 	let categories: Category[] = $state([]);
 	let fileInput: HTMLInputElement;
 	let loading = $state(false);
 	let saveStatus = $state('');
+	let importSummary: ImportSummary | null = $state(null);
 	let newCategoryName = $state('');
 	let editingCategory: { id: number; name: string } | null = $state(null);
 	let categoriesLoading = $state(false);
 
 	// Load transactions from database on mount
 	onMount(async () => {
-		({ transactions, loading, saveStatus } = await loadTransactions(
-			transactions,
-			loading,
-			saveStatus
-		));
+		loading = true;
+		try {
+			transactions = await loadTransactions();
+		} catch (error) {
+			console.error('Failed to load transactions', error);
+			saveStatus = 'Failed to load transactions';
+		} finally {
+			loading = false;
+		}
 		await loadCategories();
 	});
+
+	const handleFileUpload = async (event: Event) => {
+		const input = event.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file) return;
+
+		loading = true;
+		saveStatus = 'Processing...';
+		importSummary = null;
+
+		try {
+			const text = await readFileAsText(file);
+			const { transactions: parsed, error } = parseCSV(text);
+
+			if (error) {
+				saveStatus = `✗ ${error}`;
+				return;
+			}
+			if (parsed.length === 0) {
+				saveStatus = '✗ No transactions found in file';
+				return;
+			}
+
+			const outcome = await importTransactions(parsed);
+
+			// Re-fetch so the table reflects what's actually in the database.
+			transactions = await loadTransactions();
+			await loadCategories();
+
+			const dateKeys = parsed
+				.map((tx) => getDateKey(tx.transactionDateTime))
+				.filter((value): value is string => Boolean(value))
+				.sort();
+
+			importSummary = {
+				parsed: outcome.parsed,
+				imported: outcome.imported,
+				skipped: outcome.skipped,
+				rangeStart: dateKeys[0] ?? null,
+				rangeEnd: dateKeys[dateKeys.length - 1] ?? null
+			};
+			saveStatus = '';
+		} catch (error) {
+			console.error('Failed to import CSV', error);
+			saveStatus = '✗ Failed to import CSV';
+		} finally {
+			loading = false;
+			// Allow re-selecting the same file.
+			input.value = '';
+		}
+	};
+
+	const dismissImportSummary = () => {
+		importSummary = null;
+	};
 
 	const loadCategories = async () => {
 		categoriesLoading = true;
@@ -101,11 +170,11 @@
 			if (response.ok) {
 				await loadCategories();
 				// Category deletion unassigns transactions server-side; reload to reflect.
-				({ transactions, loading, saveStatus } = await loadTransactions(
-					transactions,
-					loading,
-					saveStatus
-				));
+				try {
+					transactions = await loadTransactions();
+				} catch (reloadError) {
+					console.error('Failed to reload transactions', reloadError);
+				}
 			} else {
 				const payload = await response.json().catch(() => null);
 				saveStatus = payload?.error ?? 'Failed to delete category';
@@ -124,7 +193,10 @@
 <div class="banking-page">
 	<div class="page-header">
 		<h1>Banking Dashboard</h1>
-		<a href={resolve('/categories')} class="nav-link">View Category Spending</a>
+		<nav class="header-nav">
+			<a href={resolve('/categories')} class="nav-link">Category Spending</a>
+			<a href={resolve('/charts')} class="nav-link">Charts</a>
+		</nav>
 	</div>
 
 	<div class="upload-section">
@@ -132,7 +204,7 @@
 			type="file"
 			accept=".csv"
 			bind:this={fileInput}
-			onchange={(e) => handleFileUpload(e, loading, saveStatus)}
+			onchange={handleFileUpload}
 			style="display: none;"
 		/>
 		<button class="upload-btn" onclick={triggerFileInput} disabled={loading}>
@@ -155,6 +227,38 @@
 		</button>
 		{#if saveStatus}
 			<span class="save-status">{saveStatus}</span>
+		{/if}
+
+		{#if importSummary}
+			<div class="import-summary" role="status">
+				<div class="import-summary-body">
+					<strong>
+						{#if importSummary.imported > 0}
+							✓ Imported {importSummary.imported}
+							{importSummary.imported === 1 ? 'transaction' : 'transactions'}
+						{:else}
+							Nothing new to import
+						{/if}
+					</strong>
+					<span class="import-summary-detail">
+						{importSummary.parsed} in file · {importSummary.skipped}
+						{importSummary.skipped === 1 ? 'duplicate' : 'duplicates'} skipped
+						{#if importSummary.rangeStart && importSummary.rangeEnd}
+							· covers {formatDateLabel(importSummary.rangeStart)}
+							{#if importSummary.rangeStart !== importSummary.rangeEnd}
+								– {formatDateLabel(importSummary.rangeEnd)}
+							{/if}
+						{/if}
+					</span>
+				</div>
+				<button
+					class="import-summary-dismiss"
+					onclick={dismissImportSummary}
+					aria-label="Dismiss import summary"
+				>
+					×
+				</button>
+			</div>
 		{/if}
 	</div>
 
@@ -275,6 +379,13 @@
 		justify-content: space-between;
 		align-items: center;
 		margin-bottom: 2rem;
+		flex-wrap: wrap;
+		gap: 1rem;
+	}
+
+	.header-nav {
+		display: flex;
+		gap: 1.25rem;
 	}
 
 	.nav-link {
@@ -456,6 +567,48 @@
 		margin-left: 1rem;
 		color: #a5f3fc;
 		font-weight: 500;
+	}
+
+	.import-summary {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: 1rem;
+		margin-top: 1rem;
+		padding: 0.9rem 1rem;
+		border: 1px solid #334155;
+		border-left: 3px solid #8b5cf6;
+		border-radius: 0.5rem;
+		background: #1e293b;
+	}
+
+	.import-summary-body {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.import-summary strong {
+		color: #f1f5f9;
+	}
+
+	.import-summary-detail {
+		color: #94a3b8;
+		font-size: 0.9rem;
+	}
+
+	.import-summary-dismiss {
+		background: transparent;
+		border: none;
+		color: #94a3b8;
+		font-size: 1.25rem;
+		line-height: 1;
+		cursor: pointer;
+		padding: 0 0.25rem;
+	}
+
+	.import-summary-dismiss:hover {
+		color: #e2e8f0;
 	}
 
 	.delete-btn {

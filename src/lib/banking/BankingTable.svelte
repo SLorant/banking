@@ -19,11 +19,24 @@
 
 	let categoriesLoading = $state(false); */
 	let editingCell: { rowIndex: number; field: keyof Transaction } | null = $state(null);
+	let showUncategorizedOnly = $state(false);
 
 	const pageSize = 100;
 	let currentPage = $state(0);
 
-	const totalPages = $derived(Math.max(1, Math.ceil(transactions.length / pageSize)));
+	const uncategorizedCount = $derived(
+		transactions.filter((transaction) => !transaction.categoryId).length
+	);
+
+	// Keep each row's index into the full `transactions` array so edit/delete stay correct
+	// even when the list is filtered.
+	const visibleTransactions = $derived(
+		transactions
+			.map((transaction, index) => ({ transaction, index }))
+			.filter(({ transaction }) => !showUncategorizedOnly || !transaction.categoryId)
+	);
+
+	const totalPages = $derived(Math.max(1, Math.ceil(visibleTransactions.length / pageSize)));
 
 	$effect(() => {
 		if (currentPage > totalPages - 1) {
@@ -32,10 +45,13 @@
 	});
 
 	const pagedTransactions = $derived(
-		transactions
-			.slice(currentPage * pageSize, currentPage * pageSize + pageSize)
-			.map((transaction, i) => ({ transaction, index: currentPage * pageSize + i }))
+		visibleTransactions.slice(currentPage * pageSize, currentPage * pageSize + pageSize)
 	);
+
+	const toggleUncategorizedOnly = () => {
+		showUncategorizedOnly = !showUncategorizedOnly;
+		currentPage = 0;
+	};
 
 	const goToPage = (page: number) => {
 		currentPage = Math.min(Math.max(page, 0), totalPages - 1);
@@ -121,6 +137,18 @@
 
 <div>
 	{#if transactions.length > 0}
+		<div class="table-toolbar">
+			<button
+				type="button"
+				class="filter-btn"
+				class:active={showUncategorizedOnly}
+				onclick={toggleUncategorizedOnly}
+			>
+				{showUncategorizedOnly ? 'Show all' : 'Uncategorized only'}
+				<span class="filter-count">{uncategorizedCount}</span>
+			</button>
+		</div>
+
 		<div class="table-container">
 			<table>
 				<thead>
@@ -225,27 +253,32 @@
 				</tbody>
 			</table>
 		</div>
+		{#if visibleTransactions.length === 0}
+			<div class="filter-empty">
+				No uncategorized transactions.
+				<button type="button" class="filter-empty-link" onclick={toggleUncategorizedOnly}>
+					Show all
+				</button>
+			</div>
+		{/if}
 		{#if totalPages > 1}
 			<div class="pagination">
 				<span class="pagination-info">
 					Rows {currentPage * pageSize + 1}–{Math.min(
 						(currentPage + 1) * pageSize,
-						transactions.length
-					)} of {transactions.length}
+						visibleTransactions.length
+					)} of {visibleTransactions.length}
 				</span>
 				<div class="pagination-controls">
 					<button disabled={currentPage === 0} onclick={() => goToPage(0)}>«</button>
-					<button disabled={currentPage === 0} onclick={() => goToPage(currentPage - 1)}
-						>‹</button
-					>
+					<button disabled={currentPage === 0} onclick={() => goToPage(currentPage - 1)}>‹</button>
 					<span class="pagination-page">Page {currentPage + 1} of {totalPages}</span>
 					<button
 						disabled={currentPage === totalPages - 1}
 						onclick={() => goToPage(currentPage + 1)}>›</button
 					>
-					<button
-						disabled={currentPage === totalPages - 1}
-						onclick={() => goToPage(totalPages - 1)}>»</button
+					<button disabled={currentPage === totalPages - 1} onclick={() => goToPage(totalPages - 1)}
+						>»</button
 					>
 				</div>
 			</div>
@@ -436,6 +469,78 @@
 	.pagination-controls button:disabled {
 		opacity: 0.4;
 		cursor: not-allowed;
+	}
+
+	.table-toolbar {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: 0.75rem;
+	}
+
+	.filter-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		background: #1e293b;
+		border: 1px solid #334155;
+		color: #e2e8f0;
+		padding: 0.5rem 0.9rem;
+		border-radius: 0.5rem;
+		cursor: pointer;
+		font-size: 0.9rem;
+		font-weight: 600;
+		transition:
+			background-color 0.15s,
+			border-color 0.15s;
+	}
+
+	.filter-btn:hover {
+		background: #334155;
+	}
+
+	.filter-btn.active {
+		border-color: #8b5cf6;
+		background: rgba(139, 92, 246, 0.15);
+		color: #f1f5f9;
+	}
+
+	.filter-count {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.5rem;
+		height: 1.5rem;
+		padding: 0 0.4rem;
+		border-radius: 999px;
+		background: #334155;
+		color: #e2e8f0;
+		font-size: 0.8rem;
+		font-weight: 700;
+	}
+
+	.filter-btn.active .filter-count {
+		background: #8b5cf6;
+		color: white;
+	}
+
+	.filter-empty {
+		padding: 1.5rem 1rem;
+		text-align: center;
+		color: #94a3b8;
+		background: #1e293b;
+		border: 1px solid #334155;
+		border-top: none;
+		border-radius: 0 0 0.75rem 0.75rem;
+	}
+
+	.filter-empty-link {
+		background: none;
+		border: none;
+		color: #a5f3fc;
+		font: inherit;
+		cursor: pointer;
+		text-decoration: underline;
+		padding: 0;
 	}
 
 	.empty-state {
