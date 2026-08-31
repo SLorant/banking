@@ -2,18 +2,24 @@
 	import { onMount } from 'svelte';
 	import { resolve } from '$app/paths';
 
-	import MonthControls from '$lib/banking/MonthControls.svelte';
+	import PeriodControls from '$lib/charts/PeriodControls.svelte';
 	import ChartCard from '$lib/charts/ChartCard.svelte';
 	import StatTile from '$lib/charts/StatTile.svelte';
 	import BarChartH from '$lib/charts/BarChartH.svelte';
 	import StackedBarH from '$lib/charts/StackedBarH.svelte';
 	import ColumnChart from '$lib/charts/ColumnChart.svelte';
-	import { buildMonths, formatMonthLabel, formatNumber } from '$lib/banking/categoryUtils';
+	import {
+		buildMonths,
+		formatMonthLabel,
+		formatNumber,
+		shiftMonthKey
+	} from '$lib/banking/categoryUtils';
 	import {
 		buildKpis,
 		buildMonthlyTotals,
 		categoryMixOverTime,
-		pickTrailing,
+		monthKeysForYear,
+		pickMonths,
 		spendingByCategory,
 		spendingByWeekday,
 		topMerchants,
@@ -24,7 +30,9 @@
 	let transactions: Transaction[] = $state([]);
 	let categories: Category[] = $state([]);
 	let months: string[] = $state([]);
+	let scope: 'month' | 'year' = $state('month');
 	let selectedMonth = $state('');
+	let selectedYear = $state('');
 	let loading = $state(true);
 	let error = $state('');
 
@@ -52,6 +60,7 @@
 
 			months = buildMonths(transactions);
 			selectedMonth = months[0] ?? '';
+			selectedYear = selectedMonth.split('-')[0] ?? '';
 		} catch (e) {
 			console.error(e);
 			error = 'Failed to load chart data.';
@@ -66,14 +75,72 @@
 		if (!Number.isFinite(year) || !Number.isFinite(month)) return monthKey;
 		return new Date(year, month - 1, 1).toLocaleString(undefined, { month: 'short' });
 	};
+	const monthShortYear = (monthKey: string) => `${monthShort(monthKey)} '${monthKey.slice(2, 4)}`;
+
+	const ready = $derived(scope === 'month' ? Boolean(selectedMonth) : Boolean(selectedYear));
+
+	// The months that make up the period being viewed.
+	const periodKeys = $derived(
+		scope === 'month' ? (selectedMonth ? [selectedMonth] : []) : monthKeysForYear(selectedYear)
+	);
+	// The comparable prior period (previous month / previous year).
+	const previousKeys = $derived(
+		scope === 'month'
+			? selectedMonth
+				? [shiftMonthKey(selectedMonth, -1)]
+				: []
+			: monthKeysForYear(String(Number(selectedYear) - 1))
+	);
+	// The run of months shown in the month-by-month trend charts.
+	const trendKeys = $derived(
+		scope === 'month'
+			? selectedMonth
+				? trailingMonthKeys(selectedMonth, 12)
+				: []
+			: monthKeysForYear(selectedYear)
+	);
+	// The run of months shown in the composition chart.
+	const mixKeys = $derived(
+		scope === 'month'
+			? selectedMonth
+				? trailingMonthKeys(selectedMonth, 6)
+				: []
+			: monthKeysForYear(selectedYear)
+	);
+
+	const periodLabel = $derived(
+		scope === 'month' ? (selectedMonth ? formatMonthLabel(selectedMonth) : '') : selectedYear
+	);
+	const comparisonLabel = $derived(scope === 'month' ? 'vs last month' : 'vs last year');
+	const trendSubtitle = $derived(
+		scope === 'month' ? `Last 12 months ending ${periodLabel}` : `${selectedYear}, month by month`
+	);
+	const mixSubtitle = $derived(
+		scope === 'month' ? 'Top 5 categories, last 6 months' : `Top 5 categories, ${selectedYear}`
+	);
 
 	const monthlyTotals = $derived(buildMonthlyTotals(transactions));
-	const kpis = $derived(selectedMonth ? buildKpis(monthlyTotals, selectedMonth) : []);
 
-	const trailing12 = $derived(selectedMonth ? pickTrailing(monthlyTotals, selectedMonth, 12) : []);
+	const kpis = $derived(
+		ready
+			? buildKpis(monthlyTotals, {
+					currentKeys: periodKeys,
+					previousKeys,
+					sparkKeys: scope === 'month' ? trailingMonthKeys(selectedMonth, 6) : periodKeys,
+					previousSparkKeys:
+						scope === 'month'
+							? trailingMonthKeys(shiftMonthKey(selectedMonth, -1), 6)
+							: previousKeys,
+					comparisonLabel,
+					avgLabel: scope === 'month' ? '6-month avg spend' : 'Avg spend / month'
+				})
+			: []
+	);
+
+	const trendMonths = $derived(pickMonths(monthlyTotals, trendKeys));
 
 	const netGroups = $derived(
-		trailing12.map((t) => ({
+		trendMonths.map((t) => ({
 			label: monthShort(t.monthKey),
 			bars: [
 				{
@@ -86,7 +153,7 @@
 	);
 
 	const flowGroups = $derived(
-		trailing12.map((t) => ({
+		trendMonths.map((t) => ({
 			label: monthShort(t.monthKey),
 			bars: [
 				{ key: 'income', value: Math.round(t.income), color: 'var(--series-1)' },
@@ -95,29 +162,17 @@
 		}))
 	);
 
-	const categoryBars = $derived(
-		selectedMonth ? spendingByCategory(transactions, categories, selectedMonth) : []
-	);
-
-	const merchantBars = $derived(selectedMonth ? topMerchants(transactions, selectedMonth, 10) : []);
+	const categoryBars = $derived(spendingByCategory(transactions, categories, periodKeys));
+	const merchantBars = $derived(topMerchants(transactions, periodKeys, 10));
 
 	const weekdayGroups = $derived(
-		(selectedMonth ? spendingByWeekday(transactions, selectedMonth) : []).map((d) => ({
+		spendingByWeekday(transactions, periodKeys).map((d) => ({
 			label: d.label,
 			bars: [{ key: 'spend', value: Math.round(d.value), color: 'var(--series-1)' }]
 		}))
 	);
 
-	const mix = $derived.by(() => {
-		if (!selectedMonth) return { keys: [], rows: [] };
-		return categoryMixOverTime(
-			transactions,
-			categories,
-			trailingMonthKeys(selectedMonth, 6),
-			5,
-			STACK_PALETTE
-		);
-	});
+	const mix = $derived(categoryMixOverTime(transactions, categories, mixKeys, 5, STACK_PALETTE));
 </script>
 
 <div class="charts-page">
@@ -130,13 +185,13 @@
 			</nav>
 		</header>
 
-		<MonthControls bind:selectedMonth {months} />
+		<PeriodControls bind:scope bind:selectedMonth bind:selectedYear {months} />
 
 		{#if loading}
 			<div class="panel">Loading…</div>
 		{:else if error}
 			<div class="panel error">{error}</div>
-		{:else if !selectedMonth}
+		{:else if !ready}
 			<div class="panel">No transactions found. Import a CSV to see charts.</div>
 		{:else}
 			<section class="kpi-row">
@@ -147,6 +202,7 @@
 						previous={kpi.previous}
 						goodDirection={kpi.goodDirection}
 						spark={kpi.spark}
+						comparisonLabel={kpi.comparisonLabel}
 					/>
 				{/each}
 			</section>
@@ -154,18 +210,18 @@
 			<div class="grid">
 				<ChartCard
 					title="Net cash flow by month"
-					subtitle="Income minus spending, last 12 months ending {formatMonthLabel(selectedMonth)}"
+					subtitle="Income minus spending · {trendSubtitle}"
 					tableColumns={['Month', 'Net']}
-					tableRows={trailing12.map((t) => [formatMonthLabel(t.monthKey), money(t.net)])}
+					tableRows={trendMonths.map((t) => [formatMonthLabel(t.monthKey), money(t.net)])}
 				>
 					<ColumnChart groups={netGroups} format={money} />
 				</ChartCard>
 
 				<ChartCard
 					title="Income vs spending by month"
-					subtitle="Last 12 months ending {formatMonthLabel(selectedMonth)}"
+					subtitle={trendSubtitle}
 					tableColumns={['Month', 'Income', 'Spending']}
-					tableRows={trailing12.map((t) => [
+					tableRows={trendMonths.map((t) => [
 						formatMonthLabel(t.monthKey),
 						money(t.income),
 						money(t.spend)
@@ -183,7 +239,7 @@
 
 				<ChartCard
 					title="Spending by category"
-					subtitle={formatMonthLabel(selectedMonth)}
+					subtitle={periodLabel}
 					tableColumns={['Category', 'Spent']}
 					tableRows={categoryBars.map((b) => [b.label, money(b.value)])}
 				>
@@ -192,7 +248,7 @@
 
 				<ChartCard
 					title="Category mix over time"
-					subtitle="Top 5 categories, last 6 months"
+					subtitle={mixSubtitle}
 					tableColumns={['Month', ...mix.keys.map((k) => k.label), 'Total']}
 					tableRows={mix.rows.map((row) => [
 						formatMonthLabel(row.monthKey),
@@ -200,26 +256,21 @@
 						money(row.total)
 					])}
 				>
-					<StackedBarH
-						rows={mix.rows}
-						keys={mix.keys}
-						rowLabel={(key) => formatMonthLabel(key)}
-						format={money}
-					/>
+					<StackedBarH rows={mix.rows} keys={mix.keys} rowLabel={monthShortYear} format={money} />
 				</ChartCard>
 
 				<ChartCard
 					title="Top merchants"
-					subtitle="Largest counterparties by spend, {formatMonthLabel(selectedMonth)}"
+					subtitle="Largest counterparties by spend · {periodLabel}"
 					tableColumns={['Merchant', 'Spent']}
 					tableRows={merchantBars.map((b) => [b.label, money(b.value)])}
 				>
-					<BarChartH bars={merchantBars} emptyText="No merchant spending this month." />
+					<BarChartH bars={merchantBars} emptyText="No merchant spending in this period." />
 				</ChartCard>
 
 				<ChartCard
 					title="Spending by day of week"
-					subtitle={formatMonthLabel(selectedMonth)}
+					subtitle={periodLabel}
 					tableColumns={['Day', 'Spent']}
 					tableRows={weekdayGroups.map((g) => [g.label, money(g.bars[0].value)])}
 				>

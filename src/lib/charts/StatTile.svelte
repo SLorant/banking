@@ -8,9 +8,17 @@
 		previous?: number | null;
 		goodDirection?: 'up' | 'down';
 		spark?: number[];
+		comparisonLabel?: string;
 	}
 
-	let { label, value, previous = null, goodDirection = 'down', spark = [] }: Props = $props();
+	let {
+		label,
+		value,
+		previous = null,
+		goodDirection = 'down',
+		spark = [],
+		comparisonLabel = 'vs last month'
+	}: Props = $props();
 
 	const delta = $derived(previous === null ? null : value - previous);
 	const deltaPct = $derived(
@@ -37,9 +45,9 @@
 					<span class="pct">({deltaPct > 0 ? '+' : ''}{Math.round(deltaPct)}%)</span>
 				{/if}
 			</span>
-			<span class="vs">vs last month</span>
+			<span class="vs">{comparisonLabel}</span>
 		{:else}
-			<span class="vs">no prior month</span>
+			<span class="vs">no earlier data</span>
 		{/if}
 	</div>
 

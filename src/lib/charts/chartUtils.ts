@@ -2,6 +2,7 @@ import type { Category, Transaction } from '../../routes/types';
 import {
 	getDateKey,
 	getMonthKey,
+	pad2,
 	parseAmountToNumber,
 	shiftMonthKey
 } from '../banking/categoryUtils';
@@ -37,6 +38,8 @@ export type Kpi = {
 	/** Which direction is a "good" change, for colouring the delta. */
 	goodDirection: 'up' | 'down';
 	spark: number[];
+	/** e.g. "vs last month" / "vs last year". */
+	comparisonLabel: string;
 };
 
 const UNCATEGORISED = 'Uncategorised';
@@ -63,6 +66,10 @@ export const trailingMonthKeys = (monthKey: string, count: number): string[] => 
 	return keys;
 };
 
+/** The twelve month keys of a calendar year, January first. */
+export const monthKeysForYear = (year: string): string[] =>
+	Array.from({ length: 12 }, (_, i) => `${year}-${pad2(i + 1)}`);
+
 /** Per-month spend / income / net across every transaction, oldest month first. */
 export const buildMonthlyTotals = (transactions: Transaction[]): MonthTotals[] => {
 	const byMonth = new Map<string, MonthTotals>();
@@ -88,60 +95,83 @@ export const buildMonthlyTotals = (transactions: Transaction[]): MonthTotals[] =
 	return [...byMonth.values()].sort((a, b) => a.monthKey.localeCompare(b.monthKey));
 };
 
+/** Line up `totals` with an explicit ordered list of month keys, filling gaps with zeroes. */
+export const pickMonths = (totals: MonthTotals[], monthKeys: string[]): MonthTotals[] => {
+	const byKey = new Map(totals.map((t) => [t.monthKey, t]));
+	return monthKeys.map((key) => byKey.get(key) ?? { monthKey: key, spend: 0, income: 0, net: 0 });
+};
+
 export const pickTrailing = (
 	totals: MonthTotals[],
 	monthKey: string,
 	count: number
-): MonthTotals[] => {
-	const wanted = trailingMonthKeys(monthKey, count);
-	const bySelectedKey = new Map(totals.map((t) => [t.monthKey, t]));
-	return wanted.map(
-		(key) => bySelectedKey.get(key) ?? { monthKey: key, spend: 0, income: 0, net: 0 }
-	);
+): MonthTotals[] => pickMonths(totals, trailingMonthKeys(monthKey, count));
+
+/** Sum spend / income / net over an arbitrary set of months. */
+export const sumMonths = (
+	totals: MonthTotals[],
+	monthKeys: string[]
+): { spend: number; income: number; net: number } => {
+	const picked = pickMonths(totals, monthKeys);
+	const spend = picked.reduce((sum, t) => sum + t.spend, 0);
+	const income = picked.reduce((sum, t) => sum + t.income, 0);
+	return { spend, income, net: income - spend };
+};
+
+const anyMonthHasData = (totals: MonthTotals[], monthKeys: string[]): boolean => {
+	const set = new Set(monthKeys);
+	return totals.some((t) => set.has(t.monthKey));
 };
 
 const categoryNameById = (categories: Category[]): Map<number, string> =>
 	new Map(categories.map((c) => [c.id, c.name]));
 
-/** Spend per category for a single month, largest first. Includes an "Uncategorised" row. */
+const spendInMonths = (
+	transactions: Transaction[],
+	monthKeys: string[],
+	onSpend: (tx: Transaction, abs: number) => void
+): void => {
+	const set = new Set(monthKeys);
+	for (const tx of transactions) {
+		const monthKey = getMonthKey(tx.transactionDateTime);
+		if (!monthKey || !set.has(monthKey)) continue;
+		const amount = parseAmountToNumber(tx.amount);
+		if (amount >= 0) continue;
+		onSpend(tx, Math.abs(amount));
+	}
+};
+
+/** Spend per category over the given months, largest first. Includes an "Uncategorised" row. */
 export const spendingByCategory = (
 	transactions: Transaction[],
 	categories: Category[],
-	monthKey: string
+	monthKeys: string[]
 ): NamedValue[] => {
 	const names = categoryNameById(categories);
 	const totals = new Map<string, number>();
 
-	for (const tx of transactions) {
-		if (getMonthKey(tx.transactionDateTime) !== monthKey) continue;
-		const amount = parseAmountToNumber(tx.amount);
-		if (amount >= 0) continue;
-
+	spendInMonths(transactions, monthKeys, (tx, abs) => {
 		const label = (tx.categoryId && names.get(tx.categoryId)) || UNCATEGORISED;
-		totals.set(label, (totals.get(label) ?? 0) + Math.abs(amount));
-	}
+		totals.set(label, (totals.get(label) ?? 0) + abs);
+	});
 
 	return [...totals.entries()]
 		.map(([label, value]) => ({ label, value }))
 		.sort((a, b) => b.value - a.value);
 };
 
-/** Largest counterparties by spend for a single month. */
+/** Largest counterparties by spend over the given months. */
 export const topMerchants = (
 	transactions: Transaction[],
-	monthKey: string,
+	monthKeys: string[],
 	limit: number
 ): NamedValue[] => {
 	const totals = new Map<string, number>();
 
-	for (const tx of transactions) {
-		if (getMonthKey(tx.transactionDateTime) !== monthKey) continue;
-		const amount = parseAmountToNumber(tx.amount);
-		if (amount >= 0) continue;
-
+	spendInMonths(transactions, monthKeys, (tx, abs) => {
 		const label = tx.partnerName?.trim() || 'Unknown';
-		totals.set(label, (totals.get(label) ?? 0) + Math.abs(amount));
-	}
+		totals.set(label, (totals.get(label) ?? 0) + abs);
+	});
 
 	return [...totals.entries()]
 		.map(([label, value]) => ({ label, value }))
@@ -151,24 +181,23 @@ export const topMerchants = (
 
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-/** Total spend by weekday for a single month (Mon–Sun). */
-export const spendingByWeekday = (transactions: Transaction[], monthKey: string): NamedValue[] => {
+/** Total spend by weekday over the given months (Mon–Sun). */
+export const spendingByWeekday = (
+	transactions: Transaction[],
+	monthKeys: string[]
+): NamedValue[] => {
 	const totals = new Array(7).fill(0);
 
-	for (const tx of transactions) {
-		if (getMonthKey(tx.transactionDateTime) !== monthKey) continue;
-		const amount = parseAmountToNumber(tx.amount);
-		if (amount >= 0) continue;
-
+	spendInMonths(transactions, monthKeys, (tx, abs) => {
 		const dateKey = getDateKey(tx.transactionDateTime);
-		if (!dateKey) continue;
+		if (!dateKey) return;
 		const [year, month, day] = dateKey.split('-').map(Number);
-		if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) continue;
+		if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return;
 
 		// getDay(): 0 = Sunday → shift so Monday = 0.
 		const weekday = (new Date(year, month - 1, day).getDay() + 6) % 7;
-		totals[weekday] += Math.abs(amount);
-	}
+		totals[weekday] += abs;
+	});
 
 	return WEEKDAYS.map((label, i) => ({ label, value: totals[i] }));
 };
@@ -236,21 +265,32 @@ export const categoryMixOverTime = (
 	return { keys, rows };
 };
 
-export const buildKpis = (totals: MonthTotals[], monthKey: string): Kpi[] => {
-	const byKey = new Map(totals.map((t) => [t.monthKey, t]));
-	const current = byKey.get(monthKey) ?? { monthKey, spend: 0, income: 0, net: 0 };
-	const previous = byKey.get(shiftMonthKey(monthKey, -1)) ?? null;
+export type KpiConfig = {
+	/** Months that make up the period being viewed. */
+	currentKeys: string[];
+	/** Months of the comparable prior period (previous month, or previous year). */
+	previousKeys: string[];
+	/** Ordered months feeding the sparklines (and the average-spend figure). */
+	sparkKeys: string[];
+	/** Ordered months feeding the prior average-spend figure. */
+	previousSparkKeys: string[];
+	comparisonLabel: string;
+	avgLabel: string;
+};
 
-	const window6 = pickTrailing(totals, monthKey, 6);
-	const sparkSpend = window6.map((t) => t.spend);
-	const sparkIncome = window6.map((t) => t.income);
-	const sparkNet = window6.map((t) => t.net);
+export const buildKpis = (totals: MonthTotals[], config: KpiConfig): Kpi[] => {
+	const current = sumMonths(totals, config.currentKeys);
+	const hasPrevious = anyMonthHasData(totals, config.previousKeys);
+	const previous = hasPrevious ? sumMonths(totals, config.previousKeys) : null;
 
-	const priorFive = pickTrailing(totals, shiftMonthKey(monthKey, -1), 5);
-	const avgWindow = [...priorFive, current];
-	const avgSpend = avgWindow.reduce((sum, t) => sum + t.spend, 0) / avgWindow.length;
-	const prevAvgWindow = pickTrailing(totals, shiftMonthKey(monthKey, -1), 6);
-	const prevAvgSpend = prevAvgWindow.reduce((sum, t) => sum + t.spend, 0) / prevAvgWindow.length;
+	const sparkMonths = pickMonths(totals, config.sparkKeys);
+	const prevSparkMonths = pickMonths(totals, config.previousSparkKeys);
+	const mean = (months: MonthTotals[]) =>
+		months.length ? months.reduce((sum, t) => sum + t.spend, 0) / months.length : 0;
+	const avgSpend = mean(sparkMonths);
+	const prevAvgSpend = anyMonthHasData(totals, config.previousSparkKeys)
+		? mean(prevSparkMonths)
+		: null;
 
 	return [
 		{
@@ -258,28 +298,32 @@ export const buildKpis = (totals: MonthTotals[], monthKey: string): Kpi[] => {
 			value: current.spend,
 			previous: previous?.spend ?? null,
 			goodDirection: 'down',
-			spark: sparkSpend
+			spark: sparkMonths.map((t) => t.spend),
+			comparisonLabel: config.comparisonLabel
 		},
 		{
 			label: 'Income',
 			value: current.income,
 			previous: previous?.income ?? null,
 			goodDirection: 'up',
-			spark: sparkIncome
+			spark: sparkMonths.map((t) => t.income),
+			comparisonLabel: config.comparisonLabel
 		},
 		{
 			label: 'Net',
 			value: current.net,
 			previous: previous?.net ?? null,
 			goodDirection: 'up',
-			spark: sparkNet
+			spark: sparkMonths.map((t) => t.net),
+			comparisonLabel: config.comparisonLabel
 		},
 		{
-			label: '6-month avg spend',
+			label: config.avgLabel,
 			value: avgSpend,
 			previous: prevAvgSpend,
 			goodDirection: 'down',
-			spark: sparkSpend
+			spark: sparkMonths.map((t) => t.spend),
+			comparisonLabel: config.comparisonLabel
 		}
 	];
 };
